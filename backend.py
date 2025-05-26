@@ -4,10 +4,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from langdetect import detect
 from googletrans import Translator
-my_key= "AIzaSyBagwVt7YqZkpQQa_wzoEkVKxzilZTHPY8"
-#load_dotenv()
-#my_key = os.getenv("GEMINI_API_KEY") 
-#my_key = os.environ.get("GEMINI_API_KEY")
+my_key = os.environ.get("GEMINI_API_KEY")
 genai.configure(api_key=my_key)
 model = genai.GenerativeModel("gemini-1.5-flash")
 
