@@ -22,7 +22,7 @@ translator = Translator()
 #3 knowledge baseds
 # 1. Load multiple files and tag them with source
 def load_knowledge_bases():
-    file_list = ["PROPERTY FINDER.txt", "BAYUT.txt", "FIND PROPERTIES.txt"]
+    file_list = ["Property_Finder.txt", "Bayut_Property.txt", "Find_Properties.txt"]
     knowledge_entries = []
     for file in file_list:
         try:
