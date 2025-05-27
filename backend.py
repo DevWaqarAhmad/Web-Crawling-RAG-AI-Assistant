@@ -19,7 +19,7 @@ model = genai.GenerativeModel(model_name="gemini-1.5-flash", generation_config=g
 
 # Language translator
 translator = Translator()
-
+#3 knowledge baseds
 # 1. Load multiple files and tag them with source
 def load_knowledge_bases():
     file_list = ["PROPERTY FINDER.txt", "BAYUT.txt", "FIND PROPERTIES.txt"]
