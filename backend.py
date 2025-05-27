@@ -4,12 +4,10 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from langdetect import detect
 from googletrans import Translator
-my_key = os.environ.get("GEMINI_API_KEY")
-genai.configure(api_key=my_key)
-model = genai.GenerativeModel("gemini-1.5-flash")
 
-file_path = 'propertyfinder.txt'
-
+# Gemini API Setup
+my_key = "AIzaSyBagwVt7YqZkpQQa_wzoEkVKxzilZTHPY8"
+#my_key = os.environ.get("GEMINI_API_KEY")
 genai.configure(api_key=my_key)
 generation_config = {
     "temperature": 1,
@@ -18,121 +16,91 @@ generation_config = {
     "max_output_tokens": 8192,
     "response_mime_type": "text/plain",
 }
+model = genai.GenerativeModel(model_name="gemini-1.5-flash", generation_config=generation_config)
 
-model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
-    generation_config=generation_config,
-)
+# Language translator
+translator = Translator()
 
+# 1. Load multiple files and tag them with source
+def load_knowledge_bases():
+    file_list = ["PROPERTY FINDER.txt", "BAYUT.txt", "FIND PROPERTIES.txt"]
+    knowledge_entries = []
+    for file in file_list:
+        try:
+            with open(file, "r", encoding="utf-8") as f:
+                chunks = f.read().split('\n\n')
+                for chunk in chunks:
+                    knowledge_entries.append({
+                        "content": chunk.strip(),
+                        "source": file.replace(".txt", "")  # e.g. "propertyfinder"
+                    })
+        except FileNotFoundError:
+            print(f"❌ File not found: {file}")
+    return knowledge_entries
 
-def load_knowledge_base(file_path):
-    try:
-        with open(file_path, 'r', encoding='utf-8') as file:
-            data = file.read()
-        return data.split('\n\n')
-    except FileNotFoundError:
-        print(f"Error: {file_path} not found.")
-        return []
+knowledge_base = load_knowledge_bases()
 
-knowledge_base = load_knowledge_base(file_path)
-
+# 2. Create embeddings
 vectorizer = TfidfVectorizer()
-tfidf_matrix = vectorizer.fit_transform(knowledge_base)
+tfidf_matrix = vectorizer.fit_transform([entry["content"] for entry in knowledge_base])
 
+# 3. Retrieval with source info
 def retrieve_relevant_chunks(query, top_k=3):
     query_vector = vectorizer.transform([query])
     similarities = cosine_similarity(query_vector, tfidf_matrix).flatten()
     top_indices = similarities.argsort()[-top_k:][::-1]
     return [knowledge_base[i] for i in top_indices]
 
-# Language Helper Functions
-translator = Translator()
-
+# 4. Detect and translate language
 def detect_language(text):
     try:
         return detect(text)
     except:
-        return 'en'  
+        return 'en'
 
 def translate_text(text, src_lang='auto', target_lang='en'):
     try:
-        result = translator.translate(text, src=src_lang, dest=target_lang)
-        return result.text
+        return translator.translate(text, src=src_lang, dest=target_lang).text
     except:
-        return text  
+        return text
+
+# 5. RAG + Gemini Logic
 chat_history = []
 
 def rag_response(query, chat_history=[], target_lang='en'):
-    # Step 1: Detect input language
-    try:
-        original_lang = detect(query)
-    except:
-        original_lang = 'en'
+    original_lang = detect_language(query)
+    translated_query = translate_text(query, src_lang=original_lang, target_lang='en') if original_lang != 'en' else query
 
-    # Step 2: Translate to English if needed
-    if original_lang != 'en':
-        try:
-            translated_query = translator.translate(query, src=original_lang, dest='en').text
-        except:
-            translated_query = query
-    else:
-        translated_query = query
-
-    # Step 3: Retrieve relevant info from knowledge base
+    # Retrieve relevant chunks with source
     relevant_chunks = retrieve_relevant_chunks(translated_query, top_k=3)
 
     if not relevant_chunks:
         fallback = "I couldn't find relevant info. Please try rephrasing or contact us at 0900 786 01 or info@demo.ae"
-        if original_lang != 'en':
-            return translator.translate(fallback, src='en', dest=original_lang).text
-        return fallback
+        return translate_text(fallback, src_lang='en', target_lang=original_lang) if original_lang != 'en' else fallback
 
-    # Step 4: Build context and prompt
-    context = "\n".join(relevant_chunks)
+    # Build prompt with source tagging
+    context = "\n\n".join([f"[Source: {chunk['source']}]\n{chunk['content']}" for chunk in relevant_chunks])
     history_text = "\n".join(chat_history)
+
     persona = (
-        "You are a helpful AI assistant for Property Finder specializing in real estate. "
-        "Your goal is to provide accurate, concise, and friendly responses to user queries. "
-        "If you don't know the answer, politely inform the user."
+        "You are a helpful AI assistant for UAE real estate. "
+        "Provide concise and accurate answers based on the following knowledge. "
+        "Clearly mention which source each piece of info is from."
     )
 
-    full_context = f"{persona}\n\n{history_text}\n\n{context}"
-    prompt = f"Context:\n{full_context}\n\nQuestion:\n{translated_query}\n\nAnswer:"
+    prompt = f"{persona}\n\nChat History:\n{history_text}\n\nKnowledge:\n{context}\n\nUser Question:\n{translated_query}\n\nAnswer:"
 
-    # Step 5: Get Gemini response
     try:
         response = model.generate_content(prompt)
         answer_in_english = response.text
     except Exception as e:
         return f"An error occurred: {str(e)}"
 
-    # Step 6: Translate back to original language
-    if original_lang != 'en':
-        try:
-            answer = translator.translate(answer_in_english, src='en', dest=original_lang).text
-        except:
-            answer = answer_in_english
-    else:
-        answer = answer_in_english
+    # Translate response back
+    answer = translate_text(answer_in_english, src_lang='en', target_lang=original_lang) if original_lang != 'en' else answer_in_english
 
-    # Step 7: Update chat history
+    # Update chat history
     chat_history.append(f"User: {translated_query}")
     chat_history.append(f"Bot: {answer_in_english}")
 
     return answer
-
-if __name__ == "__main__":
-    print("Welcome to Property Finder AI Assistant! (Type 'exit' to quit)\n")
-
-    chat_history = []
-
-    while True:
-        user_query = input("Ask your about UAE real estate: ")
-
-        if user_query.lower() in ["exit", "quit"]:
-            print("👋 Goodbye! Thanks for using the AI assistant.")
-            break
-
-        answer = rag_response(user_query, chat_history)
-        print("\nBOT Response:", answer)
-        print("\n" + "-"*60 + "\n")
