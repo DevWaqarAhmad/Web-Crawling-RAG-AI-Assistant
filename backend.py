@@ -64,49 +64,77 @@ def translate_text(text, src_lang='auto', target_lang='en'):
     except:
         return text
 
-# 5. RAG + Gemini Logic using LangChain Chat History
 def rag_response(query, message_history=None, target_lang='en'):
     if message_history is None:
         message_history = ChatMessageHistory()
 
-    original_lang = detect_language(query)
-    translated_query = translate_text(query, src_lang=original_lang, target_lang='en') if original_lang != 'en' else query
+    # Step 1: Detect input language
+    try:
+        original_lang = detect(query)
+    except:
+        original_lang = 'en'  # Default to English
 
-    # Retrieve relevant chunks with source
-    relevant_chunks = retrieve_relevant_chunks(translated_query, top_k=3)
+    # Step 2: Translate query to English if needed
+    if original_lang != 'en':
+        try:
+            translated_query = translator.translate(query, src=original_lang, dest='en').text
+        except:
+            translated_query = query
+    else:
+        translated_query = query
+
+    # Step 3: Retrieve relevant knowledge chunks
+    relevant_chunks = retrieve_relevant_chunks(translated_query)
 
     if not relevant_chunks:
-        fallback = "I couldn't find relevant info. Please try rephrasing or contact us at 0900 786 01 or info@demo.ae"
-        return translate_text(fallback, src_lang='en', target_lang=original_lang) if original_lang != 'en' else fallback
+        # Generate a fallback message in English
+        fallback_message_en = "I couldn't find relevant info. Please try rephrasing or contact us at 0900 786 01 or info@demo.ae"
 
-    # Build prompt with source tagging
+        # Translate the fallback message to the user's language
+        try:
+            fallback_message = translate_text(fallback_message_en, src_lang='en', target_lang=original_lang)
+        except:
+            fallback_message = fallback_message_en
+
+        return fallback_message
+
+    # Step 4: Build context with source tagging
     context = "\n\n".join([f"[Source: {chunk['source']}]\n{chunk['content']}" for chunk in relevant_chunks])
 
-    # Format history
+    # Format chat history
     history_text = "\n".join([
         f"User: {msg.content}" if isinstance(msg, HumanMessage) else f"Bot: {msg.content}"
         for msg in message_history.messages
     ])
 
+    # Final prompt sent to Gemini (always in English)
     persona = (
-        "You are a helpful AI assistant for UAE real estate. "
-        "Provide concise and accurate answers based on the following knowledge. "
-        "Clearly mention which source each piece of info is from."
-    )
+    "You are a helpful AI assistant for UAE real estate. "
+    "Use the provided knowledge base to answer property-related questions, and cite the source like this: (Source: Bayut_Property). "
+    "However, if the answer comes from general knowledge or chat history, do NOT include a source."
+)
+
 
     prompt = f"{persona}\n\nChat History:\n{history_text}\n\nKnowledge:\n{context}\n\nUser Question:\n{translated_query}\n\nAnswer:"
 
+    # Step 5: Get response from Gemini
     try:
         response = model.generate_content(prompt)
         answer_in_english = response.text
     except Exception as e:
         return f"An error occurred: {str(e)}"
 
-    # Translate response back
-    answer = translate_text(answer_in_english, src_lang='en', target_lang=original_lang) if original_lang != 'en' else answer_in_english
+    # Step 6: Translate final response back to user's language
+    if original_lang != 'en':
+        try:
+            final_answer = translator.translate(answer_in_english, src='en', dest=original_lang).text
+        except:
+            final_answer = answer_in_english
+    else:
+        final_answer = answer_in_english
 
-    # Save to message history
+    # Step 7: Save both versions to chat history
     message_history.add_message(HumanMessage(content=translated_query))
     message_history.add_message(AIMessage(content=answer_in_english))
 
-    return answer
+    return final_answer
