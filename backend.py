@@ -4,6 +4,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from langdetect import detect
 from googletrans import Translator
+from langchain_core.messages import HumanMessage, AIMessage
+from langchain_community.chat_message_histories import ChatMessageHistory
 
 # Gemini API Setup
 my_key = os.environ.get("GEMINI_API_KEY")
@@ -16,10 +18,8 @@ generation_config = {
     "response_mime_type": "text/plain",
 }
 model = genai.GenerativeModel(model_name="gemini-1.5-flash", generation_config=generation_config)
-
-# Language translator
 translator = Translator()
-#3 knowledge baseds
+
 # 1. Load multiple files and tag them with source
 def load_knowledge_bases():
     file_list = ["Property_Finder.txt", "Bayut_Property.txt", "Find_Properties.txt"]
@@ -27,12 +27,14 @@ def load_knowledge_bases():
     for file in file_list:
         try:
             with open(file, "r", encoding="utf-8") as f:
-                chunks = f.read().split('\n\n')
+                chunks = f.read().split('\n\n')  # Split by paragraphs
                 for chunk in chunks:
-                    knowledge_entries.append({
-                        "content": chunk.strip(),
-                        "source": file.replace(".txt", "")  # e.g. "propertyfinder"
-                    })
+                    content = chunk.strip()
+                    if content:
+                        knowledge_entries.append({
+                            "content": content,
+                            "source": file.replace(".txt", "")  # e.g., Property_Finder
+                        })
         except FileNotFoundError:
             print(f"❌ File not found: {file}")
     return knowledge_entries
@@ -63,10 +65,11 @@ def translate_text(text, src_lang='auto', target_lang='en'):
     except:
         return text
 
-# 5. RAG + Gemini Logic
-chat_history = []
+# 5. RAG + Gemini Logic using LangChain Chat History
+def rag_response(query, message_history=None, target_lang='en'):
+    if message_history is None:
+        message_history = ChatMessageHistory()
 
-def rag_response(query, chat_history=[], target_lang='en'):
     original_lang = detect_language(query)
     translated_query = translate_text(query, src_lang=original_lang, target_lang='en') if original_lang != 'en' else query
 
@@ -79,7 +82,12 @@ def rag_response(query, chat_history=[], target_lang='en'):
 
     # Build prompt with source tagging
     context = "\n\n".join([f"[Source: {chunk['source']}]\n{chunk['content']}" for chunk in relevant_chunks])
-    history_text = "\n".join(chat_history)
+
+    # Format history
+    history_text = "\n".join([
+        f"User: {msg.content}" if isinstance(msg, HumanMessage) else f"Bot: {msg.content}"
+        for msg in message_history.messages
+    ])
 
     persona = (
         "You are a helpful AI assistant for UAE real estate. "
@@ -98,8 +106,8 @@ def rag_response(query, chat_history=[], target_lang='en'):
     # Translate response back
     answer = translate_text(answer_in_english, src_lang='en', target_lang=original_lang) if original_lang != 'en' else answer_in_english
 
-    # Update chat history
-    chat_history.append(f"User: {translated_query}")
-    chat_history.append(f"Bot: {answer_in_english}")
+    # Save to message history
+    message_history.add_message(HumanMessage(content=translated_query))
+    message_history.add_message(AIMessage(content=answer_in_english))
 
     return answer
