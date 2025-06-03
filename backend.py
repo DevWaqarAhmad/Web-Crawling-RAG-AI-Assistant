@@ -9,8 +9,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langchain_community.chat_message_histories import ChatMessageHistory
 import asyncio
 
-# Configure Gemini API
-my_key = "AIzaSyBagwVt7YqZkpQQa_wzoEkVKxzilZTHPY8"
+my_key = os.environ.get("GEMINI_API_KEY")
 genai.configure(api_key=my_key)
 generation_config = {
     "temperature": 1,
