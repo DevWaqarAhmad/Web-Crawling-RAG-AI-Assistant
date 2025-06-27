@@ -1,5 +1,4 @@
 import os
-import re
 import google.generativeai as genai
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -7,10 +6,8 @@ from langdetect import detect
 from googletrans import Translator
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_community.chat_message_histories import ChatMessageHistory
-import asyncio
 
-# Configure Gemini API
-my_key = "AIzaSyBagwVt7YqZkpQQa_wzoEkVKxzilZTHPY8"
+my_key = os.environ.get("GEMINI_API_KEY")
 genai.configure(api_key=my_key)
 generation_config = {
     "temperature": 1,
@@ -20,148 +17,113 @@ generation_config = {
     "response_mime_type": "text/plain",
 }
 model = genai.GenerativeModel(model_name="gemini-1.5-flash", generation_config=generation_config)
-
 translator = Translator()
-user_profile = {}
 
-# Load knowledge base files
 def load_knowledge_bases():
     file_list = ["Property_Finder.txt", "Bayut_Property.txt", "Find_Properties.txt"]
-    knowledge_bases = {}
+    knowledge_entries = []
     for file in file_list:
         try:
             with open(file, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                knowledge_bases[file] = content
+                chunks = f.read().split('\n\n')  
+                for chunk in chunks:
+                    content = chunk.strip()
+                    if content:
+                        knowledge_entries.append({
+                            "content": content,
+                            "source": file.replace(".txt", "")  
+                        })
         except FileNotFoundError:
-            knowledge_bases[file] = ""
-    return knowledge_bases
+            print(f"❌ File not found: {file}")
+    return knowledge_entries
 
-def retrieve_per_file_responses(query, knowledge_bases, top_k=2, similarity_threshold=0.1):
-    responses = []
-    for file, content in knowledge_bases.items():
-        if not content.strip():
-            continue
+knowledge_base = load_knowledge_bases()
 
-        paragraphs = content.split('\n\n')
-        vectorizer = TfidfVectorizer()
-        tfidf_matrix = vectorizer.fit_transform(paragraphs)
-        query_vec = vectorizer.transform([query])
-        similarities = cosine_similarity(query_vec, tfidf_matrix).flatten()
+vectorizer = TfidfVectorizer()
+tfidf_matrix = vectorizer.fit_transform([entry["content"] for entry in knowledge_base])
 
-        top_indices = similarities.argsort()[-top_k:][::-1]
-        top_scores = similarities[top_indices]
+def retrieve_relevant_chunks(query, top_k=3):
+    query_vector = vectorizer.transform([query])
+    similarities = cosine_similarity(query_vector, tfidf_matrix).flatten()
+    top_indices = similarities.argsort()[-top_k:][::-1]
+    return [knowledge_base[i] for i in top_indices]
 
-        if top_scores[0] < similarity_threshold:
-            continue
+def detect_language(text):
+    try:
+        return detect(text)
+    except:
+        return 'en'
 
-        best_paragraphs = [
-            paragraphs[i].replace('\n', ' ').strip()
-            for i in top_indices if similarities[i] >= similarity_threshold
-        ]
-        if not best_paragraphs:
-            continue
-
-        source_name = file.replace('.txt', '')
-        response_with_source = f"[Source: {source_name}]\n" + "\n".join(best_paragraphs)
-        responses.append(response_with_source)
-
-    return responses
-
-def is_general_query(text):
-    general_patterns = [
-        r"how are you", r"hi", r"hello", r"hey", r"good morning", r"good evening",
-        r"what is your name", r"who are you", r"thank you", r"thanks",
-        r"my name is", r"what is my name"
-    ]
-    text = text.lower()
-    return any(re.search(pattern, text) for pattern in general_patterns)
+def translate_text(text, src_lang='auto', target_lang='en'):
+    try:
+        return translator.translate(text, src=src_lang, dest=target_lang).text
+    except:
+        return text
 
 def rag_response(query, message_history=None, target_lang='en'):
     if message_history is None:
         message_history = ChatMessageHistory()
 
+    #Detect input language
     try:
         original_lang = detect(query)
-        if len(query.split()) <= 3:
-            original_lang = 'en'
     except:
-        original_lang = 'en'
+        original_lang = 'en'  
 
-    translated_query = query
+    #Translate query to English if needed
     if original_lang != 'en':
         try:
             translated_query = translator.translate(query, src=original_lang, dest='en').text
         except:
             translated_query = query
+    else:
+        translated_query = query
 
-    chat_context = ""
-    for msg in message_history.messages:
-        role = "User" if msg.type == "human" else "Assistant"
-        chat_context += f"{role}: {msg.content}\n"
+    #Retrieve relevant knowledge chunks
+    relevant_chunks = retrieve_relevant_chunks(translated_query)
 
-    # Store name if user says "my name is..."
-    if "my name is" in translated_query.lower():
-        parts = translated_query.lower().split("my name is")
-        if len(parts) > 1:
-            name = parts[1].strip().split()[0].capitalize()
-            user_profile["name"] = name
+    if not relevant_chunks:
+        fallback_message_en = "I couldn't find relevant info. Please try rephrasing or contact us at 0900 786 01 or info@demo.ae"
 
-    # Answer if user asks "what is my name"
-    if "what is my name" in translated_query.lower() and "name" in user_profile:
-        return f"Your name is {user_profile['name']}."
-
-    # Handle greetings and general small talk
-    if is_general_query(translated_query):
-        persona = "You are a helpful assistant answering general questions briefly and kindly."
-        prompt = f"{persona}\nConversation History:\n{chat_context}\nUser Question:\n{translated_query}\nAnswer:"
         try:
-            response = model.generate_content(prompt)
-            answer_in_english = response.text
-        except Exception as e:
-            answer_in_english = f"An error occurred: {str(e)}"
+            fallback_message = translate_text(fallback_message_en, src_lang='en', target_lang=original_lang)
+        except:
+            fallback_message = fallback_message_en
 
-        final_answer = translator.translate(answer_in_english, src='en', dest=original_lang).text if original_lang != 'en' else answer_in_english
-        message_history.add_message(HumanMessage(content=query))
-        message_history.add_message(AIMessage(content=answer_in_english))
-        return final_answer
+        return fallback_message
 
-    # Load knowledge base
-    knowledge_bases = load_knowledge_bases()
-    file_responses = retrieve_per_file_responses(translated_query, knowledge_bases)
+    context = "\n\n".join([f"[Source: {chunk['source']}]\n{chunk['content']}" for chunk in relevant_chunks])
 
-    if file_responses:
-        combined_response = "\n\n".join(file_responses)
-        message_history.add_message(HumanMessage(content=query))
-        message_history.add_message(AIMessage(content=combined_response))
-        return combined_response
+    history_text = "\n".join([
+        f"User: {msg.content}" if isinstance(msg, HumanMessage) else f"Bot: {msg.content}"
+        for msg in message_history.messages
+    ])
 
-    # Fallback to model
-    persona = "You are a helpful assistant answering real estate-related queries clearly."
-    prompt = f"{persona}\nConversation History:\n{chat_context}\nUser Question:\n{translated_query}\nAnswer:"
+    persona = (
+    "You are a helpful AI assistant for UAE real estate. "
+    "Use the provided knowledge base to answer property-related questions, and cite the source like this: (Source: Bayut_Property). "
+    "However, if the answer comes from general knowledge or chat history, do NOT include a source."
+)
+
+
+    prompt = f"{persona}\n\nChat History:\n{history_text}\n\nKnowledge:\n{context}\n\nUser Question:\n{translated_query}\n\nAnswer:"
+
     try:
         response = model.generate_content(prompt)
         answer_in_english = response.text
     except Exception as e:
-        answer_in_english = f"An error occurred: {str(e)}"
+        return f"An error occurred: {str(e)}"
 
-    final_answer = translator.translate(answer_in_english, src='en', dest=original_lang).text if original_lang != 'en' else answer_in_english
-    message_history.add_message(HumanMessage(content=query))
+    if original_lang != 'en':
+        try:
+            final_answer = translator.translate(answer_in_english, src='en', dest=original_lang).text
+        except:
+            final_answer = answer_in_english
+    else:
+        final_answer = answer_in_english
+
+    #Save both versions to chat history
+    message_history.add_message(HumanMessage(content=translated_query))
     message_history.add_message(AIMessage(content=answer_in_english))
+
     return final_answer
-
-def main():
-    print("\U0001F916 Property Finder AI Agent Chatbot (type 'exit' to quit)\n")
-    chat_history = ChatMessageHistory()
-
-    while True:
-        user_input = input("🧑 You: ").strip()
-        if user_input.lower() in ["exit", "quit"]:
-            print("👋 Exiting chatbot...")
-            break
-
-        response = rag_response(user_input, message_history=chat_history)
-        print(f"🤖 Bot: {response}\n")
-
-if __name__ == "__main__":
-    asyncio.run(main())
